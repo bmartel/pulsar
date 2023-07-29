@@ -293,7 +293,7 @@ pub struct AudioDecoder {
     samples: Vec<f32>,
     duration: u64,
     sample_rate: u32,
-    channels: u8,
+    channels: usize,
     samples_len: usize,
     error: Option<String>,
 }
@@ -318,7 +318,7 @@ impl AudioDecoder {
         self.sample_rate
     }
 
-    pub fn get_channels(&self) -> u8 {
+    pub fn get_channels(&self) -> usize {
         self.channels
     }
 
@@ -395,9 +395,9 @@ impl AudioDecoder {
                         // Create the f32 sample buffer.
                         sample_buf = Some(SampleBuffer::<f32>::new(duration, spec));
 
+                        self.sample_rate = spec.rate;
                         self.duration = duration;
-                        // self.sample_rate = track.audio.as_ref().unwrap().sample_rate;
-                        // self.channels = track.audio.as_ref().unwrap().channels;
+                        self.channels = spec.channels.count();
                     }
 
                     // Copy the decoded audio buffer into the sample buffer in an interleaved format.
@@ -409,7 +409,10 @@ impl AudioDecoder {
                         samples.extend_from_slice(buf.samples());
                     }
                 },
-                Err(Error::DecodeError(e)) => return Err(JsValue::from_str(&format!("{:?}", e))),
+                Err(Error::DecodeError(e)) => {
+                    log!("Decode error: {:?}", e);
+                    break;
+                }
                 Err(_) => break,
             }
         }
