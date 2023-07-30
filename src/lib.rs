@@ -400,7 +400,24 @@ impl AudioDecoder {
         let decoder_opts: DecoderOptions = Default::default();
         let mut hint = Hint::new();
 
-        let probe = symphonia::default::get_probe().format(&mut hint, stream, &format_opts, &metadata_opts).unwrap();
+        let probe = match symphonia::default::get_probe().format(&mut hint, stream, &format_opts, &metadata_opts) {
+            Ok(probe) => probe,
+            Err(e) => {
+                let msg = e.to_string();
+
+                match e {
+                    Error::IoError(_) => {
+                        return Err(AudioError::new(msg, AudioErrorKind::IoError))
+                    },
+                    Error::Unsupported(_) => {
+                        return Err(AudioError::new(msg, AudioErrorKind::UnsupportedError))
+                    },
+                    _ => {
+                        return Err(AudioError::new(msg, AudioErrorKind::UnknownError))
+                    }
+                }
+            }
+        };
         let mut format = probe.format;
 
         let track = format.default_track().unwrap();
