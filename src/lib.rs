@@ -6,7 +6,6 @@ use std::io::{Read, Seek};
 use std::sync::atomic::AtomicBool;
 use std::thread;
 use std::fmt;
-use std::error::Error as StdError;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use rangemap::RangeSet;
 use reqwest::Client;
@@ -53,10 +52,10 @@ pub struct AudioError {
 }
 
 impl AudioError {
-    pub fn new(e: Error, kind: AudioErrorKind) -> Self {
+    pub fn new(message: String, kind: AudioErrorKind) -> Self {
         AudioError {
             kind: kind,
-            message: e.to_string(),
+            message: message,
         }
     }
 
@@ -90,9 +89,8 @@ pub struct StreamableFile
 
 impl StreamableFile
 {
-    pub fn new(url:String, bytes: Option<Vec<u8>>) -> Self
+    pub fn new(url:String, buffer: Vec<u8>) -> Self
     {
-        let buffer = bytes.unwrap_or_default();
         let downloaded = if buffer.is_empty() {
             RangeSet::new()
         } else {
@@ -248,8 +246,6 @@ impl Read for StreamableFile
                 .unwrap().as_millis();
             self.receivers.push((id, rx));
 
-            // warning: unused implementer f `Future` that must be used
-            // note: futures do nothing unless you `.await` or poll them
             thread::spawn(move || {
                 let rt = Builder::new_current_thread()
                     .enable_all()
@@ -392,8 +388,13 @@ impl AudioDecoder {
     }
 
     async fn decode_audio(&mut self) -> Result<Vec<f32>, AudioError> {
-        let bytes = fetch_audio_file(&self.url).await.unwrap();
-        let stream = MediaSourceStream::new(Box::new(StreamableFile::new(self.url.to_string(), Some(bytes))), Default::default());
+        let bytes = match fetch_audio_file(&self.url).await {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                return Err(AudioError::new(e.to_string(), AudioErrorKind::RequestError))
+            }
+        };
+        let stream = MediaSourceStream::new(Box::new(StreamableFile::new(self.url.to_string(), bytes)), Default::default());
         let format_opts: FormatOptions = Default::default();
         let metadata_opts: MetadataOptions = Default::default();
         let decoder_opts: DecoderOptions = Default::default();
@@ -415,36 +416,37 @@ impl AudioDecoder {
             let packet = match format.next_packet() {
                 Ok(packet) => packet,
                 Err(e) => {
-                    if e.to_string() == "end of stream" {
+                    let msg = e.to_string();
+                    if msg == "end of stream" {
                         break;
                     }
                     match e {
-                        Error::IoError(e) => {
-                            err = Some(AudioError::new(Error::IoError(e), AudioErrorKind::IoError));
+                        Error::IoError(_) => {
+                            err = Some(AudioError::new(msg, AudioErrorKind::IoError));
                             break;
                         },
-                        Error::DecodeError(e) => {
-                            err = Some(AudioError::new(Error::DecodeError(e), AudioErrorKind::DecodeError));
+                        Error::DecodeError(_) => {
+                            err = Some(AudioError::new(msg, AudioErrorKind::DecodeError));
                             break;
                         },
-                        Error::SeekError(e) => {
-                            err = Some(AudioError::new(Error::SeekError(e), AudioErrorKind::SeekError));
+                        Error::SeekError(_) => {
+                            err = Some(AudioError::new(msg, AudioErrorKind::SeekError));
                             break;
                         },
-                        Error::Unsupported(e) => {
-                            err = Some(AudioError::new(Error::Unsupported(e), AudioErrorKind::UnsupportedError));
+                        Error::Unsupported(_) => {
+                            err = Some(AudioError::new(msg, AudioErrorKind::UnsupportedError));
                             break;
                         },
-                        Error::LimitError(e) => {
-                            err = Some(AudioError::new(Error::LimitError(e), AudioErrorKind::LimitError));
+                        Error::LimitError(_) => {
+                            err = Some(AudioError::new(msg, AudioErrorKind::LimitError));
                             break;
                         },
                         Error::ResetRequired => {
-                            err = Some(AudioError::new(Error::from(e), AudioErrorKind::ResetRequiredError));
+                            err = Some(AudioError::new(msg, AudioErrorKind::ResetRequiredError));
                             break;
                         },
                         _ => {
-                            err = Some(AudioError::new(Error::from(e), AudioErrorKind::UnknownError));
+                            err = Some(AudioError::new(msg, AudioErrorKind::UnknownError));
                             break;
                         }
                     }
@@ -493,36 +495,37 @@ impl AudioDecoder {
                     }
                 },
                 Err(e) => {
-                    if e.to_string() == "end of stream" {
+                    let msg = e.to_string();
+                    if msg == "end of stream" {
                         break;
                     }
                     match e {
-                        Error::IoError(e) => {
-                            err = Some(AudioError::new(Error::IoError(e), AudioErrorKind::IoError));
+                        Error::IoError(_) => {
+                            err = Some(AudioError::new(msg, AudioErrorKind::IoError));
                             break;
                         },
-                        Error::DecodeError(e) => {
-                            err = Some(AudioError::new(Error::DecodeError(e), AudioErrorKind::DecodeError));
+                        Error::DecodeError(_) => {
+                            err = Some(AudioError::new(msg, AudioErrorKind::DecodeError));
                             break;
                         },
-                        Error::SeekError(e) => {
-                            err = Some(AudioError::new(Error::SeekError(e), AudioErrorKind::SeekError));
+                        Error::SeekError(_) => {
+                            err = Some(AudioError::new(msg, AudioErrorKind::SeekError));
                             break;
                         },
-                        Error::Unsupported(e) => {
-                            err = Some(AudioError::new(Error::Unsupported(e), AudioErrorKind::UnsupportedError));
+                        Error::Unsupported(_) => {
+                            err = Some(AudioError::new(msg, AudioErrorKind::UnsupportedError));
                             break;
                         },
-                        Error::LimitError(e) => {
-                            err = Some(AudioError::new(Error::LimitError(e), AudioErrorKind::LimitError));
+                        Error::LimitError(_) => {
+                            err = Some(AudioError::new(msg, AudioErrorKind::LimitError));
                             break;
                         },
                         Error::ResetRequired => {
-                            err = Some(AudioError::new(Error::from(e), AudioErrorKind::ResetRequiredError));
+                            err = Some(AudioError::new(msg, AudioErrorKind::ResetRequiredError));
                             break;
                         },
                         _ => {
-                            err = Some(AudioError::new(Error::from(e), AudioErrorKind::UnknownError));
+                            err = Some(AudioError::new(msg, AudioErrorKind::UnknownError));
                             break;
                         }
                     }
