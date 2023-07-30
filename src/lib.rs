@@ -5,6 +5,8 @@ use wasm_bindgen::prelude::*;
 use std::io::{Read, Seek};
 use std::sync::atomic::AtomicBool;
 use std::thread;
+use std::fmt;
+use std::error::Error as StdError;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use rangemap::RangeSet;
 use reqwest::Client;
@@ -19,6 +21,57 @@ use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
 use tokio::runtime::Builder;
 
+pub enum AudioErrorKind {
+    IoError,
+    DecodeError,
+    SeekError,
+    UnsupportedError,
+    LimitError,
+    ResetRequiredError,
+    RequestError,
+    UnknownError,
+}
+
+impl fmt::Display for AudioErrorKind {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            AudioErrorKind::IoError => write!(f, "IoError"),
+            AudioErrorKind::DecodeError => write!(f, "DecodeError"),
+            AudioErrorKind::SeekError => write!(f, "SeekError"),
+            AudioErrorKind::UnsupportedError => write!(f, "UnsupportedError"),
+            AudioErrorKind::LimitError => write!(f, "LimitError"),
+            AudioErrorKind::ResetRequiredError => write!(f, "ResetRequiredError"),
+            AudioErrorKind::RequestError => write!(f, "RequestError"),
+            AudioErrorKind::UnknownError => write!(f, "UnknownError"),
+        }
+    }
+}
+
+pub struct AudioError {
+    message: String,
+    kind: AudioErrorKind,
+}
+
+impl AudioError {
+    pub fn new(e: Error, kind: AudioErrorKind) -> Self {
+        AudioError {
+            kind: kind,
+            message: e.to_string(),
+        }
+    }
+
+    pub fn get_message(&self) -> String {
+        format!("{{\"message\":\"{}\",\"kind\":\"{}\"}}", self.message, self.kind.to_string()) 
+    }
+}
+
+impl fmt::Display for AudioError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // JSON string of the error. No serde_json
+        write!(f, "{}", self.get_message())
+    }
+}
+
 // Used in cpal_output.rs to mute the stream when buffering.
 pub static IS_STREAM_BUFFERING: AtomicBool = AtomicBool::new(false);
 
@@ -27,12 +80,12 @@ const FETCH_OFFSET:usize = CHUNK_SIZE / 2;
 
 pub struct StreamableFile
 {
-    url:String,
-    buffer:Vec<u8>,
-    read_position:usize,
-    downloaded:RangeSet<usize>,
-    requested:RangeSet<usize>,
-    receivers:Vec<(u128, Receiver<(usize, Vec<u8>)>)>
+    url: String,
+    buffer: Vec<u8>,
+    read_position: usize,
+    downloaded: RangeSet<usize>,
+    requested: RangeSet<usize>,
+    receivers: Vec<(u128, Receiver<(usize, Vec<u8>)>)>
 }
 
 impl StreamableFile
@@ -334,11 +387,11 @@ impl AudioDecoder {
         self.samples.as_ptr()
     }
 
-    pub fn get_error(&self) -> Option<String> {
+    pub fn get_last_error(&self) -> Option<String> {
         self.error.clone()
     }
 
-    async fn decode_audio(&mut self) -> Result<Vec<f32>, JsValue> {
+    async fn decode_audio(&mut self) -> Result<Vec<f32>, AudioError> {
         let bytes = fetch_audio_file(&self.url).await.unwrap();
         let stream = MediaSourceStream::new(Box::new(StreamableFile::new(self.url.to_string(), Some(bytes))), Default::default());
         let format_opts: FormatOptions = Default::default();
@@ -355,6 +408,7 @@ impl AudioDecoder {
         let mut sample_count = 0;
         let mut sample_buf = None;
         let mut samples = Vec::new();
+        let mut err: Option<AudioError> = None;
 
         loop {
             // Get the next packet from the format reader.
@@ -364,8 +418,37 @@ impl AudioDecoder {
                     if e.to_string() == "end of stream" {
                         break;
                     }
-                    return Err(JsValue::from_str(&format!("{:?}", e)))
-                }
+                    match e {
+                        Error::IoError(e) => {
+                            err = Some(AudioError::new(Error::IoError(e), AudioErrorKind::IoError));
+                            break;
+                        },
+                        Error::DecodeError(e) => {
+                            err = Some(AudioError::new(Error::DecodeError(e), AudioErrorKind::DecodeError));
+                            break;
+                        },
+                        Error::SeekError(e) => {
+                            err = Some(AudioError::new(Error::SeekError(e), AudioErrorKind::SeekError));
+                            break;
+                        },
+                        Error::Unsupported(e) => {
+                            err = Some(AudioError::new(Error::Unsupported(e), AudioErrorKind::UnsupportedError));
+                            break;
+                        },
+                        Error::LimitError(e) => {
+                            err = Some(AudioError::new(Error::LimitError(e), AudioErrorKind::LimitError));
+                            break;
+                        },
+                        Error::ResetRequired => {
+                            err = Some(AudioError::new(Error::from(e), AudioErrorKind::ResetRequiredError));
+                            break;
+                        },
+                        _ => {
+                            err = Some(AudioError::new(Error::from(e), AudioErrorKind::UnknownError));
+                            break;
+                        }
+                    }
+                },
             };
 
             // If the packet does not belong to the selected track, skip it.
@@ -409,12 +492,46 @@ impl AudioDecoder {
                         samples.extend_from_slice(buf.samples());
                     }
                 },
-                Err(Error::DecodeError(e)) => {
-                    log!("Decode error: {:?}", e);
-                    break;
-                }
-                Err(_) => break,
+                Err(e) => {
+                    if e.to_string() == "end of stream" {
+                        break;
+                    }
+                    match e {
+                        Error::IoError(e) => {
+                            err = Some(AudioError::new(Error::IoError(e), AudioErrorKind::IoError));
+                            break;
+                        },
+                        Error::DecodeError(e) => {
+                            err = Some(AudioError::new(Error::DecodeError(e), AudioErrorKind::DecodeError));
+                            break;
+                        },
+                        Error::SeekError(e) => {
+                            err = Some(AudioError::new(Error::SeekError(e), AudioErrorKind::SeekError));
+                            break;
+                        },
+                        Error::Unsupported(e) => {
+                            err = Some(AudioError::new(Error::Unsupported(e), AudioErrorKind::UnsupportedError));
+                            break;
+                        },
+                        Error::LimitError(e) => {
+                            err = Some(AudioError::new(Error::LimitError(e), AudioErrorKind::LimitError));
+                            break;
+                        },
+                        Error::ResetRequired => {
+                            err = Some(AudioError::new(Error::from(e), AudioErrorKind::ResetRequiredError));
+                            break;
+                        },
+                        _ => {
+                            err = Some(AudioError::new(Error::from(e), AudioErrorKind::UnknownError));
+                            break;
+                        }
+                    }
+                },
             }
+        }
+
+        if err.is_some() {
+            return Err(err.unwrap());
         }
 
         self.samples_len = sample_count;
@@ -427,9 +544,15 @@ impl AudioDecoder {
 
         match result {
             Ok(data) => self.samples = data,
-            Err(e) => self.error = Some("Error decoding audio".to_string()),
+            Err(e) => {
+                self.error = Some(e.get_message());
+            },
         };
 
-        Ok(())
+        if self.error.is_some() {
+            Err(JsValue::from_str(&self.error.clone().unwrap()))
+        } else {
+            Ok(())
+        }
     }
 }
