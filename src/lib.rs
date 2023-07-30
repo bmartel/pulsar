@@ -18,7 +18,18 @@ use symphonia::core::io::MediaSource;
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
+use symphonia::core::units::TimeBase;
 use tokio::runtime::Builder;
+
+fn fmt_time(ts: u64, tb: TimeBase) -> String {
+    let time = tb.calc_time(ts);
+
+    let hours = time.seconds / (60 * 60);
+    let mins = (time.seconds % (60 * 60)) / 60;
+    let secs = f64::from((time.seconds % 60) as u32) + time.frac;
+
+    format!("{}:{:0>2}:{:0>6.3}", hours, mins, secs)
+}
 
 pub enum AudioErrorKind {
     IoError,
@@ -215,8 +226,7 @@ impl StreamableFile
     }
 }
 
-impl Read for StreamableFile
-{
+impl Read for StreamableFile {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize>
     {
         // If we are reading after the buffer,
@@ -341,6 +351,7 @@ pub struct AudioDecoder {
     url: String,
     samples: Vec<f32>,
     duration: u64,
+    time_base: TimeBase,
     sample_rate: u32,
     channels: usize,
     samples_len: usize,
@@ -357,6 +368,7 @@ impl AudioDecoder {
             samples: Vec::new(),
             error: None,
             duration: 0,
+            time_base: TimeBase::default(),
             sample_rate: 0,
             channels: 0,
             samples_len: 0,
@@ -371,8 +383,13 @@ impl AudioDecoder {
         self.channels
     }
 
+    // Returns the duration in seconds based on the time base.
     pub fn get_duration(&self) -> u64 {
-        self.duration
+        self.time_base.calc_time(self.duration).seconds
+    }
+
+    pub fn get_duration_str(&self) -> String {
+        fmt_time(self.duration, self.time_base)
     }
 
     pub fn get_samples_len(&self) -> usize {
@@ -395,7 +412,8 @@ impl AudioDecoder {
             }
         };
         let stream = MediaSourceStream::new(Box::new(StreamableFile::new(self.url.to_string(), bytes)), Default::default());
-        let format_opts: FormatOptions = Default::default();
+        let mut format_opts: FormatOptions = Default::default();
+        format_opts.enable_gapless = false;
         let metadata_opts: MetadataOptions = Default::default();
         let decoder_opts: DecoderOptions = Default::default();
         let mut hint = Hint::new();
@@ -422,6 +440,12 @@ impl AudioDecoder {
 
         let track = format.default_track().unwrap();
         let track_id = track.id;
+        if let Some(duration) = track.codec_params.n_frames.map(|frames| track.codec_params.start_ts + frames) {
+            self.duration = duration;
+        }
+        if let Some(time_base) = track.codec_params.time_base {
+            self.time_base = time_base;
+        }
         let mut decoder = symphonia::default::get_codecs().make(&track.codec_params, &decoder_opts).unwrap();
         let mut sample_count = 0;
         let mut sample_buf = None;
@@ -492,13 +516,12 @@ impl AudioDecoder {
                         let spec = *audio_buf.spec();
 
                         // Get the capacity of the decoded buffer. Note: This is capacity, not length!
-                        let duration = audio_buf.capacity() as u64;
+                        let capacity = audio_buf.capacity() as u64;
 
                         // Create the f32 sample buffer.
-                        sample_buf = Some(SampleBuffer::<f32>::new(duration, spec));
+                        sample_buf = Some(SampleBuffer::<f32>::new(capacity, spec));
 
                         self.sample_rate = spec.rate;
-                        self.duration = duration;
                         self.channels = spec.channels.count();
                     }
 

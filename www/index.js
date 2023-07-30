@@ -8,21 +8,57 @@ const sampleMp3 =
 const sampleWav =
   "https://raw.githubusercontent.com/bmartel/pulsar/main/www/assets/sample_10MB_WAV.wav";
 
+app.appendChild(document.createElement("h1")).textContent = "Pulsar";
+const audio = document.createElement("audio");
+audio.src = sampleOgg;
+audio.controls = true;
+app.appendChild(audio);
+
 const decoder = AudioDecoder.new(sampleOgg);
+
+const formatTime = (ms) => {
+  const date = new Date(null);
+  date.setSeconds(Number(ms));
+
+  return date.toISOString().substr(11, 8);
+};
+
+const formatError = (err) => {
+  if (!err) {
+    return null;
+  }
+
+  if (err instanceof Error) {
+    return err.message;
+  }
+
+  if (err.startsWith("{") && err.endsWith("}")) {
+    return JSON.parse(err);
+  }
+
+  return err;
+};
 
 decoder
   .decode()
   .then(() => {
     const err = decoder.get_last_error();
-    console.log(err);
     const samplesPtr = decoder.get_samples();
     const samples = new Float32Array(
       memory.buffer,
       samplesPtr,
       decoder.get_samples_len()
     );
-    console.log(samples);
+    console.log("error?", err);
+    console.log("channels", decoder.get_channels());
+    console.log("sample_rate", decoder.get_sample_rate());
+    console.log(
+      "duration",
+      decoder.get_duration_str(),
+      formatTime(decoder.get_duration())
+    );
+    console.log("samples", samples);
   })
   .catch((err) => {
-    console.error(JSON.parse(err));
+    console.error(formatError(err));
   });
