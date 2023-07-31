@@ -21,6 +21,25 @@ use symphonia::core::probe::Hint;
 use symphonia::core::units::TimeBase;
 use tokio::runtime::Builder;
 
+#[wasm_bindgen(module = "/interop.js")]
+extern "C" {
+    type EventEmitter;
+
+    #[wasm_bindgen(constructor)]
+    fn new() -> EventEmitter;
+
+    #[wasm_bindgen(method)]
+    fn on(this: &EventEmitter, event: &str, callback: &js_sys::Function);
+    
+    #[wasm_bindgen(method)]
+    fn emit(this: &EventEmitter, event: &str, data: &js_sys::Object);
+    
+    #[wasm_bindgen(method)]
+    fn off(this: &EventEmitter, event: &str, callback: &js_sys::Function);
+
+    fn getEventEmitter() -> EventEmitter;
+}
+
 fn fmt_time(ts: u64, tb: TimeBase) -> String {
     let time = tb.calc_time(ts);
 
@@ -82,7 +101,7 @@ impl fmt::Display for AudioError {
     }
 }
 
-// Used in cpal_output.rs to mute the stream when buffering.
+// Used to detect when the stream is buffering.
 pub static IS_STREAM_BUFFERING: AtomicBool = AtomicBool::new(false);
 
 const CHUNK_SIZE:usize = 1024 * 128;
@@ -97,10 +116,8 @@ pub struct StreamableFile {
     receivers: Vec<(u128, Receiver<(usize, Vec<u8>)>)>
 }
 
-impl StreamableFile
-{
-    pub fn new(url:String, buffer: Vec<u8>) -> Self
-    {
+impl StreamableFile {
+    pub fn new(url:String, buffer: Vec<u8>) -> Self {
         let downloaded = if buffer.is_empty() {
             RangeSet::new()
         } else {
@@ -109,8 +126,7 @@ impl StreamableFile
             rs
         };
 
-        StreamableFile
-        {
+        StreamableFile {
             url,
             buffer: buffer,
             read_position: 0,
