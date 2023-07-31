@@ -88,8 +88,7 @@ pub static IS_STREAM_BUFFERING: AtomicBool = AtomicBool::new(false);
 const CHUNK_SIZE:usize = 1024 * 128;
 const FETCH_OFFSET:usize = CHUNK_SIZE / 2;
 
-pub struct StreamableFile
-{
+pub struct StreamableFile {
     url: String,
     buffer: Vec<u8>,
     read_position: usize,
@@ -147,8 +146,7 @@ impl StreamableFile
     /// Gets the next chunk in the sequence.
     /// 
     /// Returns the received bytes by sending them via `tx`.
-    async fn read_chunk(tx:Sender<(usize, Vec<u8>)>, url:String, start:usize, file_size:usize)
-    {
+    async fn read_chunk(tx:Sender<(usize, Vec<u8>)>, url:String, start:usize, file_size:usize) {
         let end = (start + CHUNK_SIZE).min(file_size);
 
         let chunk = Client::new().get(url)
@@ -163,20 +161,17 @@ impl StreamableFile
     /// If there is data to receive, then write it to the buffer.
     /// 
     /// Changes made are commited to `downloaded`.
-    fn try_write_chunk(&mut self, should_buffer:bool)
-    {
+    fn try_write_chunk(&mut self, should_buffer:bool) {
         let mut completed_downloads = Vec::new();
 
-        for (id, rx) in &self.receivers
-        {
+        for (id, rx) in &self.receivers {
             // Block on the first chunk or when buffering.
             // Buffering fixes the issue with seeking on MP3 (no blocking on data).
             let result = if self.downloaded.is_empty() || should_buffer {
                 rx.recv().ok()
             } else { rx.try_recv().ok() };
 
-            match result
-            {
+            match result {
                 None => (),
                 Some((position, chunk)) => {
                     // Write the data.
@@ -202,8 +197,7 @@ impl StreamableFile
     /// 
     /// Returns `true` and the start index of the chunk
     /// if one should be downloaded.
-    fn should_get_chunk(&self, buf_len:usize) -> (bool, usize)
-    {
+    fn should_get_chunk(&self, buf_len:usize) -> (bool, usize) {
         let closest_range = self.downloaded.get(&self.read_position);
 
         if closest_range.is_none() {
@@ -227,8 +221,7 @@ impl StreamableFile
 }
 
 impl Read for StreamableFile {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize>
-    {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         // If we are reading after the buffer,
         // then return early with 0 written bytes.
         if self.read_position >= self.buffer.len() {
@@ -244,8 +237,7 @@ impl Read for StreamableFile {
         let (should_get_chunk, chunk_write_pos) = self.should_get_chunk(buf.len());
         
         log!("Read: read_pos[{}] read_max[{read_max}] buf[{}] write_pos[{chunk_write_pos}] download[{should_get_chunk}]", self.read_position, buf.len());
-        if should_get_chunk
-        {
+        if should_get_chunk {
             self.requested.insert(chunk_write_pos..chunk_write_pos + CHUNK_SIZE + 1);
 
             let url = self.url.clone();
@@ -279,12 +271,9 @@ impl Read for StreamableFile {
     }
 }
 
-impl Seek for StreamableFile
-{
-    fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64>
-    {
-        let seek_position:usize = match pos
-        {
+impl Seek for StreamableFile {
+    fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
+        let seek_position:usize = match pos {
             std::io::SeekFrom::Start(pos) => pos as usize,
             std::io::SeekFrom::Current(pos) => {
                 let pos = self.read_position as i64 + pos;
@@ -322,8 +311,7 @@ impl Seek for StreamableFile
 unsafe impl Send for StreamableFile {}
 unsafe impl Sync for StreamableFile {}
 
-impl MediaSource for StreamableFile
-{
+impl MediaSource for StreamableFile {
     fn is_seekable(&self) -> bool {
         true
     }
@@ -356,11 +344,12 @@ pub struct AudioDecoder {
     channels: usize,
     samples_len: usize,
     error: Option<String>,
+    gapless: bool,
 }
 
 #[wasm_bindgen]
 impl AudioDecoder {
-    pub fn new(url: &str) -> AudioDecoder {
+    pub fn new(url: &str, gapless: Option<bool>) -> AudioDecoder {
         set_panic_hook();
 
         AudioDecoder {
@@ -372,6 +361,7 @@ impl AudioDecoder {
             sample_rate: 0,
             channels: 0,
             samples_len: 0,
+            gapless: gapless.unwrap_or(true),
         }
     }
 
@@ -413,7 +403,7 @@ impl AudioDecoder {
         };
         let stream = MediaSourceStream::new(Box::new(StreamableFile::new(self.url.to_string(), bytes)), Default::default());
         let mut format_opts: FormatOptions = Default::default();
-        format_opts.enable_gapless = false;
+        format_opts.enable_gapless = self.gapless;
         let metadata_opts: MetadataOptions = Default::default();
         let decoder_opts: DecoderOptions = Default::default();
         let mut hint = Hint::new();
