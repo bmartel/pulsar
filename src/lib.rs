@@ -136,24 +136,27 @@ impl StreamableFile {
         }
     }
 
+    async fn get_size(&mut self) -> usize {
+
+        // Get the size of the file we are streaming.
+        let res = Client::new().head(&self.url)
+            .send()
+            .await.unwrap();
+
+        let header = res
+            .headers().get("Content-Length")
+            .unwrap();
+
+        header
+            .to_str()
+            .unwrap()
+            .parse()
+            .unwrap()
+    }
+
     async fn init_stream(&mut self) {
         if self.buffer.is_empty() {
-            // Get the size of the file we are streaming.
-            let res = Client::new().head(&self.url)
-                .send()
-                .await.unwrap();
-
-            let header = res
-                .headers().get("Content-Length")
-                .unwrap();
-
-            let size:usize = header
-                .to_str()
-                .unwrap()
-                .parse()
-                .unwrap();
-
-            log!("{size}");
+            let size = self.get_size().await;
 
             self.buffer = vec![0; size];
         }
@@ -252,7 +255,7 @@ impl Read for StreamableFile {
         // to the last downloaded chunk, then fetch more.
         let (should_get_chunk, chunk_write_pos) = self.should_get_chunk(buf.len());
         
-        log!("Read: read_pos[{}] read_max[{read_max}] buf[{}] write_pos[{chunk_write_pos}] download[{should_get_chunk}]", self.read_position, buf.len());
+        // log!("Read: read_pos[{}] read_max[{read_max}] buf[{}] write_pos[{chunk_write_pos}] download[{should_get_chunk}]", self.read_position, buf.len());
         if should_get_chunk {
             self.requested.insert(chunk_write_pos..chunk_write_pos + CHUNK_SIZE + 1);
 
@@ -312,11 +315,11 @@ impl Seek for StreamableFile {
         };
 
         if seek_position > self.buffer.len() {
-            log!("Seek position {seek_position} > file size");
+            // log!("Seek position {seek_position} > file size");
             return Ok(self.read_position as u64);
         }
 
-        log!("Seeking: pos[{seek_position}] type[{pos:?}]");
+        // log!("Seeking: pos[{seek_position}] type[{pos:?}]");
 
         self.read_position = seek_position;
 
@@ -347,6 +350,7 @@ pub struct DecodingResult {
 async fn fetch_audio_file(url: &str) -> Result<Vec<u8>, reqwest::Error> {
     let res = reqwest::get(url).await?;
     let bytes = res.bytes().await?;
+    
     Ok(bytes.to_vec())
 }
 
@@ -410,14 +414,13 @@ impl AudioDecoder {
         self.error.clone()
     }
 
-    async fn decode_audio(&mut self) -> Result<Vec<f32>, AudioError> {
-        let bytes = match fetch_audio_file(&self.url).await {
-            Ok(bytes) => bytes,
-            Err(e) => {
-                return Err(AudioError::new(e.to_string(), AudioErrorKind::RequestError))
-            }
-        };
-        let stream = MediaSourceStream::new(Box::new(StreamableFile::new(self.url.to_string(), bytes)), Default::default());
+    async fn decode_audio(&mut self, bytes: Option<Vec<u8>>) -> Result<Vec<f32>, AudioError> {
+        let should_init = bytes.is_none();
+        let mut file = StreamableFile::new(self.url.to_string(), bytes.unwrap_or_default());
+        if should_init {
+            file.init_stream().await;
+        }
+        let stream = MediaSourceStream::new(Box::new(file), Default::default());
         let mut format_opts: FormatOptions = Default::default();
         format_opts.enable_gapless = self.gapless;
         let metadata_opts: MetadataOptions = Default::default();
@@ -589,7 +592,33 @@ impl AudioDecoder {
     }
 
     pub async fn decode(&mut self) -> Result<(), JsValue> {
-        let result = self.decode_audio().await;
+        let bytes = match fetch_audio_file(&self.url).await {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                let err = AudioError::new(e.to_string(), AudioErrorKind::RequestError);
+                self.error = Some(err.get_message());
+                return Err(JsValue::from_str(&self.error.clone().unwrap()));
+            }
+        };
+
+        let result = self.decode_audio(Some(bytes)).await;
+
+        match result {
+            Ok(data) => self.samples = data,
+            Err(e) => {
+                self.error = Some(e.get_message());
+            },
+        };
+
+        if self.error.is_some() {
+            Err(JsValue::from_str(&self.error.clone().unwrap()))
+        } else {
+            Ok(())
+        }
+    }
+
+    pub async fn decode_stream(&mut self) -> Result<(), JsValue> {
+        let result = self.decode_audio(None).await;
 
         match result {
             Ok(data) => self.samples = data,
