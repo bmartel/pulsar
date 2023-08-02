@@ -21,25 +21,6 @@ use symphonia::core::probe::Hint;
 use symphonia::core::units::TimeBase;
 use tokio::runtime::Builder;
 
-#[wasm_bindgen(module = "/interop.js")]
-extern "C" {
-    type EventEmitter;
-
-    #[wasm_bindgen(constructor)]
-    fn new() -> EventEmitter;
-
-    #[wasm_bindgen(method)]
-    fn on(this: &EventEmitter, event: &str, callback: &js_sys::Function);
-    
-    #[wasm_bindgen(method)]
-    fn emit(this: &EventEmitter, event: &str, data: &js_sys::Object);
-    
-    #[wasm_bindgen(method)]
-    fn off(this: &EventEmitter, event: &str, callback: &js_sys::Function);
-
-    fn getEventEmitter() -> EventEmitter;
-}
-
 fn fmt_time(ts: u64, tb: TimeBase) -> String {
     let time = tb.calc_time(ts);
 
@@ -414,7 +395,7 @@ impl AudioDecoder {
         self.error.clone()
     }
 
-    async fn decode_audio(&mut self, bytes: Option<Vec<u8>>) -> Result<Vec<f32>, AudioError> {
+    async fn decode_audio(&mut self, bytes: Option<Vec<u8>>, callback: &js_sys::Function) -> Result<Vec<f32>, AudioError> {
         let should_init = bytes.is_none();
         let mut file = StreamableFile::new(self.url.to_string(), bytes.unwrap_or_default());
         if should_init {
@@ -460,6 +441,7 @@ impl AudioDecoder {
         let mut sample_buf = None;
         let mut samples = Vec::new();
         let mut err: Option<AudioError> = None;
+        let this = JsValue::NULL;
 
         loop {
             // Get the next packet from the format reader.
@@ -542,6 +524,9 @@ impl AudioDecoder {
                         sample_count += buf.samples().len();
                         samples.extend_from_slice(buf.samples());
                     }
+
+                    let value = JsValue::from("Packet decoded");
+                    let _ = callback.call1(&this, &value);
                 },
                 Err(e) => {
                     let msg = e.to_string();
@@ -591,7 +576,7 @@ impl AudioDecoder {
         Ok(samples)
     }
 
-    pub async fn decode(&mut self) -> Result<(), JsValue> {
+    pub async fn decode(&mut self, callback: &js_sys::Function) -> Result<(), JsValue> {
         let bytes = match fetch_audio_file(&self.url).await {
             Ok(bytes) => bytes,
             Err(e) => {
@@ -601,7 +586,7 @@ impl AudioDecoder {
             }
         };
 
-        let result = self.decode_audio(Some(bytes)).await;
+        let result = self.decode_audio(Some(bytes), callback).await;
 
         match result {
             Ok(data) => self.samples = data,
@@ -617,8 +602,8 @@ impl AudioDecoder {
         }
     }
 
-    pub async fn decode_stream(&mut self) -> Result<(), JsValue> {
-        let result = self.decode_audio(None).await;
+    pub async fn decode_stream(&mut self, callback: &js_sys::Function) -> Result<(), JsValue> {
+        let result = self.decode_audio(None, callback).await;
 
         match result {
             Ok(data) => self.samples = data,

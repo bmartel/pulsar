@@ -12,7 +12,8 @@
   },
   "license": "MIT",
   "dependencies": {
-    "pulsar": "file:../pkg"
+    "pulsar": "file:../pkg",
+    "wavesurfer.js": "^7.1.1"
   },
   "devDependencies": {
     "copy-webpack-plugin": "^11.0.0",
