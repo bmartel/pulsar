@@ -55,11 +55,11 @@ const formatError = (err) => {
   return err;
 };
 
+console.time("decode");
 decoder
-  .decode((msg) => {
-    console.log(msg);
-  })
+  .decode()
   .then(() => {
+    console.timeEnd("decode");
     const err = decoder.get_last_error();
     const samplesPtr = decoder.get_samples();
     const samples = new Float32Array(
