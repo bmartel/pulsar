@@ -15,6 +15,7 @@ use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
 use symphonia::core::units::TimeBase;
+use getrandom::getrandom;
 
 fn fmt_time(ts: u64, tb: TimeBase) -> String {
     let time = tb.calc_time(ts);
@@ -24,6 +25,17 @@ fn fmt_time(ts: u64, tb: TimeBase) -> String {
     let secs = f64::from((time.seconds % 60) as u32) + time.frac;
 
     format!("{}:{:0>2}:{:0>6.3}", hours, mins, secs)
+}
+
+
+fn random_string(len: usize) -> String {
+    let mut buf = vec![0u8; len];
+    getrandom(&mut buf).unwrap();
+    // convert to string
+    buf.iter()
+        .map(|b| format!("{:02x}", b))
+        .collect::<Vec<_>>()
+        .join("")
 }
 
 #[wasm_bindgen]
@@ -44,6 +56,8 @@ pub enum AudioErrorKind {
     LimitError,
     ResetRequiredError,
     RequestError,
+    CancelledError,
+    DecodeIdNotSetError,
     UnknownError,
 }
 
@@ -57,6 +71,8 @@ impl fmt::Display for AudioErrorKind {
             AudioErrorKind::LimitError => write!(f, "LimitError"),
             AudioErrorKind::ResetRequiredError => write!(f, "ResetRequiredError"),
             AudioErrorKind::RequestError => write!(f, "RequestError"),
+            AudioErrorKind::CancelledError => write!(f, "CancelledError"),
+            AudioErrorKind::DecodeIdNotSetError => write!(f, "DecodeIdNotSetError"),
             AudioErrorKind::UnknownError => write!(f, "UnknownError"),
         }
     }
@@ -70,8 +86,8 @@ pub struct AudioError {
 impl AudioError {
     pub fn new(message: String, kind: AudioErrorKind) -> Self {
         AudioError {
-            kind: kind,
-            message: message,
+            kind,
+            message,
         }
     }
 
@@ -97,7 +113,7 @@ impl StreamableFile {
     pub fn new(url:String, buffer: Vec<u8>) -> Self {
         StreamableFile {
             url,
-            buffer: buffer,
+            buffer,
             read_position: 0,
         }
     }
@@ -175,11 +191,8 @@ impl Seek for StreamableFile {
         };
 
         if seek_position > self.buffer.len() {
-            // log!("Seek position {seek_position} > file size");
             return Ok(self.read_position as u64);
         }
-
-        // log!("Seeking: pos[{seek_position}] type[{pos:?}]");
 
         self.read_position = seek_position;
 
@@ -216,6 +229,7 @@ async fn fetch_audio_file(url: &str) -> Result<Vec<u8>, reqwest::Error> {
 
 #[wasm_bindgen]
 pub struct AudioDecoder {
+    decode_id: Option<String>,
     url: String,
     samples: Vec<f32>,
     duration: u64,
@@ -234,6 +248,7 @@ impl AudioDecoder {
         set_panic_hook();
 
         AudioDecoder {
+            decode_id: Some(random_string(10)),
             url: url.to_string(),
             samples: Vec::new(),
             error: None,
@@ -280,7 +295,27 @@ impl AudioDecoder {
         self.error.clone()
     }
 
+    pub fn set_decode_id(&mut self, id: &str) {
+        self.decode_id = Some(id.to_string());
+    }
+
+    pub fn get_decode_id(&self) -> Option<String> {
+        self.decode_id.clone()
+    }
+
+    pub fn cancel(&mut self) {
+        self.decode_id = None;
+        self.samples.clear();
+    }
+
     async fn decode_audio(&mut self, bytes: Option<Vec<u8>>, callback: &js_sys::Function) -> Result<Vec<f32>, AudioError> {
+        let decode_id = self.get_decode_id();
+        if decode_id.is_none() {
+            return Err(AudioError::new("Decode ID is not set, ensure set_decode_id('my-string-id') was called.".to_string(), AudioErrorKind::DecodeIdNotSetError));
+        }
+
+        log!("Decoding:{}: {}", decode_id.clone().unwrap(), self.url);
+
         let should_init = bytes.is_none();
         let mut file = StreamableFile::new(self.url.to_string(), bytes.unwrap_or_default());
         if should_init {
@@ -329,6 +364,11 @@ impl AudioDecoder {
         let this = JsValue::NULL;
 
         loop {
+            // If the decode id has changed, then we need to cancel this decode.
+            if self.decode_id != decode_id {
+                return Err(AudioError::new("Decode cancelled".to_string(), AudioErrorKind::CancelledError));
+            }
+
             // Get the next packet from the format reader.
             let packet = match format.next_packet() {
                 Ok(packet) => packet,
@@ -360,10 +400,6 @@ impl AudioDecoder {
                         },
                         Error::ResetRequired => {
                             err = Some(AudioError::new(msg, AudioErrorKind::ResetRequiredError));
-                            break;
-                        },
-                        _ => {
-                            err = Some(AudioError::new(msg, AudioErrorKind::UnknownError));
                             break;
                         }
                     }
@@ -454,10 +490,6 @@ impl AudioDecoder {
                         Error::ResetRequired => {
                             err = Some(AudioError::new(msg, AudioErrorKind::ResetRequiredError));
                             break;
-                        },
-                        _ => {
-                            err = Some(AudioError::new(msg, AudioErrorKind::UnknownError));
-                            break;
                         }
                     }
                 },
@@ -469,7 +501,9 @@ impl AudioDecoder {
         }
 
         self.samples_len = sample_count;
-        log!("\rDecoded {} samples", self.samples_len);
+
+        log!("Decoded:{}: {} samples", decode_id.clone().unwrap(), self.samples_len);
+
         Ok(samples)
     }
 
