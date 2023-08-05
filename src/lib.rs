@@ -3,10 +3,7 @@ mod utils;
 use crate::utils::set_panic_hook;
 use wasm_bindgen::prelude::*;
 use std::io::{Read, Seek};
-use std::sync::atomic::AtomicBool;
 use std::fmt;
-use std::sync::mpsc::{channel, Receiver, Sender};
-use rangemap::RangeSet;
 use reqwest::Client;
 use serde::{Serialize, Deserialize};
 use symphonia::core::audio::SampleBuffer;
@@ -36,7 +33,7 @@ extern "C" {
 }
 
 pub fn get_unix_timestamp_millis() -> u128 {
-    (now() as u128)
+    now() as u128
 }
 
 pub enum AudioErrorKind {
@@ -226,6 +223,7 @@ pub struct AudioDecoder {
     sample_rate: u32,
     channels: usize,
     samples_len: usize,
+    estimate_samples_len: usize,
     error: Option<String>,
     gapless: bool,
 }
@@ -244,6 +242,7 @@ impl AudioDecoder {
             sample_rate: 0,
             channels: 0,
             samples_len: 0,
+            estimate_samples_len: 0,
             gapless: gapless.unwrap_or(true),
         }
     }
@@ -267,6 +266,10 @@ impl AudioDecoder {
 
     pub fn get_samples_len(&self) -> usize {
         self.samples_len
+    }
+
+    pub fn get_progress(&self, current_samples_len: usize) -> f32 {
+        (current_samples_len as f32 / self.estimate_samples_len as f32) * 100.0
     }
 
     pub fn get_samples(&self) -> *const f32 {
@@ -396,6 +399,9 @@ impl AudioDecoder {
 
                         self.sample_rate = spec.rate;
                         self.channels = spec.channels.count();
+                        // Estimate the number of samples in the total decoded audio buffer.
+                        // Note: This is an estimate, not an exact value!
+                        self.estimate_samples_len = (self.channels as u64 * self.sample_rate as u64 * self.get_duration() as u64) as usize;
                     }
 
                     // Copy the decoded audio buffer into the sample buffer in an interleaved format.
@@ -407,8 +413,17 @@ impl AudioDecoder {
                         samples.extend_from_slice(buf.samples());
                     }
 
-                    let value = JsValue::from("Packet decoded");
-                    let _ = callback.call1(&this, &value);
+                    let progress = self.get_progress(sample_count);
+
+                    if progress == 0.0 {
+                        let sample_rate = JsValue::from(self.sample_rate);
+                        let channels = JsValue::from(self.channels);
+                        let duration = JsValue::from(self.get_duration());
+                        let _ = callback.call3(&this, &sample_rate, &channels, &duration);
+                    } else {
+                        let value = JsValue::from(progress);
+                        let _ = callback.call1(&this, &value);
+                    }
                 },
                 Err(e) => {
                     let msg = e.to_string();
